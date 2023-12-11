@@ -1,0 +1,22 @@
+create or replace view MARKETING_DATABASE.PUBLIC.NEWTESTVIEW(
+	RECHARGE_SUBSCRIPTION_ID,
+	RECURLY_SUBSCRIPTION_ID,
+	FIRST_CHARGED_DATE,
+	CANCELLED_AT,
+	TOTAL_QUANTITY,
+	RECURLY_TOTAL_QUANTITY,
+	RECHARGE_TOTAL_QUANTITY,
+	CUSTOMER_EMAIL,
+	PLAN_NAME,
+	EMAIL,
+	CAMPAIGNS
+) as 
+
+select *
+from "MARKETING_DATABASE"."PUBLIC"."TEST_VIEW_THREE" as tv
+left join (
+
+select 
+distinct email as email,
+campaign_names as campaigns
+from "MARKETING_DATABASE"."PUBLIC"."FILTERVIEW" ) as fv on tv.customer_email = fv.email;

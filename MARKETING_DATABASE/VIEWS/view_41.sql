@@ -1,0 +1,6 @@
+create or replace view MARKETING_DATABASE.PUBLIC.V_NEXTREBILLSRP (nextbill,plan_code,qty) as 
+select to_date(CURRENT_PERIOD_ENDS_AT) nextbill, PLAN_CODE, SUM(QUANTITY) from IO06230_RECURLY_SEED_SHARE.CLASSIC.SUBSCRIPTIONS
+where STATE = 'active' OR STATE = 'paused' OR STATE = 'pending'
+AND NEXTBILL > CURRENT_DATE()
+group by NEXTBILL, PLAN_CODE
+order by NEXTBILL, PLAN_CODE ASC
