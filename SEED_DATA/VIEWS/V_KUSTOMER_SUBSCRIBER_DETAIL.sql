@@ -1,0 +1,164 @@
+Create or REPLACE VIEW SEED_DATA.DEV.V_KUSTOMER_SUBSCRIBER_DETAIL as 
+
+-------------BRINGING IN KUSTOMER DATA FROM THERE CUSTOMER TABLE---------------------
+  WITH KUSTOMER as (
+select 
+    CE.CUSTOMER_ID as KUSTOMER_ID,
+    UPPER(CE.EMAIL) as EMAIL,
+    CONVERSATION_COUNTS_ALL as TOTAL_CONVERSATIONS,
+    CONVERSATION_COUNTS_SNOOZED as TOTAL_CONVERSATIONS_SNOOZED,
+    CONVERSATION_COUNTS_DONE as CLOSED_CONVERSATIONS,
+    CONVERSATION_COUNTS_OPEN as OPEN_CONVERSATIONS,
+    SENTIMENT_CONFIDENCE    
+ FROM   
+    "MARKETING_DATABASE"."KUSTOMER"."CUSTOMER_EMAIL" CE
+ LEFT JOIN "MARKETING_DATABASE"."KUSTOMER"."CUSTOMER" C
+    on  CE.CUSTOMER_ID = C.ID
+                )
+  -------------BRINGING IN THE LATEST QUEUES AND TEAM ASSIGNMENTS------------------------
+ ,QUEUE as (
+            select 
+            QUEUE_ID,
+            TEAM_ID,
+            DISPLAY_NAME
+            from "MARKETING_DATABASE"."KUSTOMER"."TEAM_QUEUE" tq
+             left join  "MARKETING_DATABASE"."KUSTOMER"."TEAM" t
+              on t.id = tq.team_id 
+                where tq._FIVETRAN_SYNCED = (select max(_FIVETRAN_SYNCED) from "MARKETING_DATABASE"."KUSTOMER"."TEAM_QUEUE" tq)
+                     and deleted = FALSE
+           )
+   -------------BRINGING IN SOME CONVERSATION METRICS------------------------------------
+ 
+ ,CONVERSATION as ( 
+        
+    select 
+    distinct c.id,
+    customer_id,
+    case when split_part(CUSTOM_CATEGORY_TREE, '.',1) = 'medical_health' then '1' else '0' end as MEDICAL_HEALTH_CONVO,
+    case when split_part(CUSTOM_CATEGORY_TREE, '.',1) = 'cancel_subscription' then '1' else '0' end as CANCEL_SUBSCRIPTION_CONVO,
+    case when split_part(CUSTOM_CATEGORY_TREE, '.',1) = 'general_subscription' then '1' else '0' end as GENERAL_SUBSCRIPTION_CONVO,
+    case when split_part(CUSTOM_CATEGORY_TREE, '.',1) = 'subject_matter_education' then '1' else '0' end as SUBJECT_MATTER_EDUCATION_CONVO,
+    case when split_part(CUSTOM_CATEGORY_TREE, '.',1) = 'effects_question' then '1' else '0' end as EFFECTS_QUESTION_CONVO,
+    case when split_part(CUSTOM_CATEGORY_TREE, '.',1) = 'fullfillment_issue' then '1' else '0' end as FULLFILLMENT_ISSUE_CONVO,
+    case when split_part(CUSTOM_CATEGORY_TREE, '.',1) = 'product_question' then '1' else '0' end as PRODUCT_QUESTION_CONVO,
+    case when split_part(CUSTOM_CATEGORY_TREE, '.',1) not in ('product_question', 'fullfillment_issue', 'effects_question' , 'subject_matter_education',  'general_subscription', 'cancel_subscription','medical_health')  then '1' else '0' end as OTHER_QUESTION_CONVO, 
+    Case when tq.DISPLAY_NAME = 'SciCare Team' then '1' else '0' end as SCI_CARE_TEAM,
+    Case when tq.DISPLAY_NAME <> 'SciCare Team' then '1' else '0' end as CARE_TEAM,
+    Case when c.reopen_count is null then 0 else 1 end as HAD_CONVERSATION_REOPENED,
+    c.CREATED_AT as FIRST_CONVERSATION_START_DATE,
+    c.CREATED_AT AS LAST_CONVERSATION_START_DATE,
+    c.LAST_ACTIVITY_AT AS LAST_ACTIVITY_DATE,
+    c.MESSAGE_COUNT AS TOTAL_MESSAGES,
+    OUTBOUND_MESSAGE_COUNT AS TOTAL_OUTBOUND_MESSAGES,
+    PRIORITY as AVG_PRIORITY,
+    case when SATISFACTION_LEVEL_RATING is not null and SATISFACTION_LEVEL_RATING in (4,5) then 1 else 0 end as POSITIVE_INTERACTION,
+    case when SATISFACTION_LEVEL_RATING is not null and SATISFACTION_LEVEL_RATING not in (4,5) then 1 else 0 end as NEGATIVE_INTERACTION,
+    SATISFACTION_LEVEL_RATING as AVG_SATISFACTION_LEVEL_RATING
+
+    from
+    MARKETING_DATABASE.KUSTOMER.CONVERSATION  c  
+
+    --------------JOINING TO GET THE QUEUE BREAKDOWN---------------------------
+    left join QUEUE tq
+    on tq.queue_id = c.queue_id
+  
+ --    where customer_id = '5e295af18497cd001284344f'    
+    )
+ -------------------ADDING MESSAGE CHANNEL------------------------------------
+  ,MESSAGE AS (   
+  select distinct conversation_id,
+         case when channel = 'voice' then 1 else 0 end as VOICE_CHANNEL,
+         case when channel = 'chat' then 1 else 0 end as CHAT_CHANNEL,
+         case when channel = 'email' then 1 else 0 end as EMAIL_CHANNEL, 
+         case when channel in ('instagram-comment','twitter-tweet','facebook','instagram','facebook-wallpost','twitter-dm') then 1 else 0 end as SOCIAL_CHANNEL
+  from   MARKETING_DATABASE.KUSTOMER.MESSAGE
+ 
+   
+  )
+  
+  -----------CONSOLIDATING ALL OF THE CONVO/MESSAGE METRICS INTO FLAGS---------------------
+  ,FINAL_CONVO as (
+  select 
+    customer_id,
+   Max(case when MEDICAL_HEALTH_CONVO = 1 then 'Y' else 'N' end) as MEDICAL_HEALTH_CONVO,
+   MAX(case when CANCEL_SUBSCRIPTION_CONVO = 1 then 'Y' else 'N' end) as CANCEL_SUBSCRIPTION_CONVO,
+   MAX(case when GENERAL_SUBSCRIPTION_CONVO = 1 then 'Y' else 'N' end) as GENERAL_SUBSCRIPTION_CONVO,
+   MAX(case when SUBJECT_MATTER_EDUCATION_CONVO = 1 then 'Y' else 'N' end) as SUBJECT_MATTER_EDUCATION_CONVO,
+   MAX(case when EFFECTS_QUESTION_CONVO = 1 then 'Y' else 'N' end) as EFFECTS_QUESTION_CONVO,
+   MAX(case when FULLFILLMENT_ISSUE_CONVO = 1 then 'Y' else 'N' end) as FULLFILLMENT_ISSUE_CONVO,
+   MAX(case when PRODUCT_QUESTION_CONVO = 1 then 'Y' else 'N' end) as PRODUCT_QUESTION_CONVO,
+   MAX(case when OTHER_QUESTION_CONVO = 1 then 'Y' else 'N' end) as OTHER_QUESTION_CONVO,
+   MAX(case when SCI_CARE_TEAM = 1 then 'Y' else 'N' end) as SPOKE_W_SCI_CARE,
+   MAX(case when CARE_TEAM = 1 then 'Y' else 'N' end) as SPOKE_W_CARE_TEAM,
+   MAX(case when VOICE_CHANNEL = 1 then 'Y' else 'N' end) as USED_VOICE_CHANNEL,
+   MAX(case when CHAT_CHANNEL = 1 then 'Y' else 'N' end) as USED_CHAT_CHANNEL,
+   MAX(case when EMAIL_CHANNEL = 1 then 'Y' else 'N' end) as USED_EMAIL_CHANNEL,
+   MAX(case when SOCIAL_CHANNEL = 1 then 'Y' else 'N' end) as USED_SOCIAL_CHANNEL, 
+   MAX(case when POSITIVE_INTERACTION = 1 then 'Y' else 'N' end) as HAD_POSITIVE_INTERACTION,  
+   MAX(case when NEGATIVE_INTERACTION = 1 then 'Y' else 'N' end) as HAD_NEGATIVE_INTERACTION, 
+   MAX(case when HAD_CONVERSATION_REOPENED = 1 then 'Y' else 'N' end) as HAD_CONVO_REOPENED, 
+   MIN(FIRST_CONVERSATION_START_DATE) as FIRST_CONVERSATION_START_DATE,
+   MAX(LAST_CONVERSATION_START_DATE) as LAST_CONVERSATION_START_DATE,
+   MAX(LAST_ACTIVITY_DATE) as LAST_ACTIVITY_DATE,
+   SUM(TOTAL_MESSAGES) as TOTAL_MESSAGES,
+   SUM(TOTAL_MESSAGES) - SUM(TOTAL_OUTBOUND_MESSAGES) as TOTAL_INBOUND_MESSAGES,
+   SUM(TOTAL_OUTBOUND_MESSAGES) as TOTAL_OUTBOUND_MESSAGES,
+   AVG(AVG_PRIORITY) as AVG_PRIORITY,
+   AVG(AVG_SATISFACTION_LEVEL_RATING) as AVG_SATISFACTION_LEVEL_RATING
+   from CONVERSATION C
+   left join MESSAGE M
+   on M.CONVERSATION_ID = C.ID
+   GROUP BY 1
+   
+    )
+    ---------------BRINGING IN SEED DATA TO LINK KUSTOMER --------------------------------
+  ,SEED as ( select 
+            distinct customer_id as CUSTOMER_ID, 
+            Upper(customer_email) as EMAIL
+          from  "SEED_DATA"."DEV"."SUBSCRIPTION_MASTER" 
+          )  
+
+    Select
+    
+     SEED.CUSTOMER_ID
+    ,KUSTOMER.EMAIL
+    ,CASE when TOTAL_CONVERSATIONS > 0 then 'Y' else 'N' end as CONTACTED_MX_TEAM
+    ,KUSTOMER.KUSTOMER_ID
+    ,KUSTOMER.TOTAL_CONVERSATIONS
+    ,KUSTOMER.TOTAL_CONVERSATIONS_SNOOZED
+    ,KUSTOMER.OPEN_CONVERSATIONS
+    ,KUSTOMER.CLOSED_CONVERSATIONS
+    ,IFNULL(FINAL_CONVO.TOTAL_MESSAGES,0) as TOTAL_MESSAGES
+    ,IFNULL(FINAL_CONVO.TOTAL_INBOUND_MESSAGES,0) as TOTAL_INBOUND_MESSAGES
+    ,IFNULL(FINAL_CONVO.TOTAL_OUTBOUND_MESSAGES,0) as TOTAL_OUTBOUND_MESSAGES
+    ,FINAL_CONVO.AVG_PRIORITY as AVG_MESSAGE_PRIORITY
+    ,FINAL_CONVO.AVG_SATISFACTION_LEVEL_RATING
+    ,KUSTOMER.SENTIMENT_CONFIDENCE as AVG_SENTIMENT_CONFIDENCE
+    ,FINAL_CONVO.FIRST_CONVERSATION_START_DATE
+    ,FINAL_CONVO.LAST_CONVERSATION_START_DATE
+    ,FINAL_CONVO.LAST_ACTIVITY_DATE as LAST_ACTIVITY_IN_KUSTOMER
+    ,IFNULL(FINAL_CONVO.MEDICAL_HEALTH_CONVO,'N') as HAD_MEDICAL_HEALTH_CONVO
+    ,IFNULL(FINAL_CONVO.CANCEL_SUBSCRIPTION_CONVO,'N') as HAD_CANCEL_SUBSCRIPTION_CONVO
+    ,IFNULL(FINAL_CONVO.GENERAL_SUBSCRIPTION_CONVO,'N') as HAD_GENERAL_SUBSCRIPTION_CONVO
+    ,IFNULL(FINAL_CONVO.SUBJECT_MATTER_EDUCATION_CONVO,'N') as HAD_SUBJECT_MATTER_EDUCATION_CONVO
+    ,IFNULL(FINAL_CONVO.EFFECTS_QUESTION_CONVO,'N') as HAD_EFFECTS_QUESTION_CONVO
+    ,IFNULL(FINAL_CONVO.FULLFILLMENT_ISSUE_CONVO,'N') as HAD_FULLFILLMENT_ISSUE_CONVO
+    ,IFNULL(FINAL_CONVO.PRODUCT_QUESTION_CONVO,'N') as PRODUCT_QUESTION_CONVO
+    ,IFNULL(FINAL_CONVO.OTHER_QUESTION_CONVO,'N') as OTHER_QUESTION_CONVO
+    ,IFNULL(FINAL_CONVO.SPOKE_W_SCI_CARE,'N') as SPOKE_W_SCI_CARE
+    ,IFNULL(FINAL_CONVO.SPOKE_W_CARE_TEAM,'N') as SPOKE_W_CARE_TEAM
+    ,IFNULL(FINAL_CONVO.USED_VOICE_CHANNEL,'N') as USED_VOICE_CHANNEL
+    ,IFNULL(FINAL_CONVO.USED_CHAT_CHANNEL,'N') as USED_CHAT_CHANNEL
+    ,IFNULL(FINAL_CONVO.USED_EMAIL_CHANNEL,'N') as USED_EMAIL_CHANNEL
+    ,IFNULL(FINAL_CONVO.USED_SOCIAL_CHANNEL,'N') as USED_SOCIAL_CHANNEL
+    ,IFNULL(FINAL_CONVO.HAD_POSITIVE_INTERACTION,'N') as HAD_POSITIVE_INTERACTION
+    ,IFNULL(FINAL_CONVO.HAD_NEGATIVE_INTERACTION,'N') as HAD_NEGATIVE_INTERACTION
+    ,IFNULL(FINAL_CONVO.HAD_CONVO_REOPENED,'N') as HAD_CONVO_REOPENED
+
+    
+    from KUSTOMER 
+    LEFT JOIN FINAL_CONVO 
+    on FINAL_CONVO.CUSTOMER_ID = KUSTOMER.KUSTOMER_ID
+ ----------------JOINING TO GET SEED CUSTOMER ID-------------------------------------------    
+    LEFT JOIN  SEED
+    on UPPER(SEED.EMAIL) = UPPER(KUSTOMER.EMAIL)
